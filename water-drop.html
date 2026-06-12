@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>水滴落入水面动画</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0a1830;
+    font-family: -apple-system, "PingFang SC", sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    background: linear-gradient(
+      to bottom,
+      #0a1830 0%,
+      #102a4d 45%,
+      #1a4878 55%,
+      #2a6ba5 100%
+    );
+  }
+  .tip {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.75);
+    font-size: 14px;
+    letter-spacing: 2px;
+    pointer-events: none;
+    user-select: none;
+  }
+  .panel {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    background: rgba(10, 24, 48, 0.55);
+    padding: 10px 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.1);
+    backdrop-filter: blur(6px);
+  }
+  .panel button {
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .panel button:hover {
+    background: rgba(255,255,255,0.2);
+    transform: translateY(-1px);
+  }
+</style>
+</head>
+<body>
+<div class="tip">点击水面任意位置 · 或按"自动落水滴"观察效果</div>
+<canvas id="stage"></canvas>
+<div class="panel">
+  <button id="btnDrop">来一滴水</button>
+  <button id="btnAuto">自动落水滴</button>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+
+  let W = 0, H = 0, waterLine = 0;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    waterLine = H * 0.55;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- 水滴 ----------
+  class Droplet {
+    constructor(x, y, vy = 0, bounce = 0) {
+      this.x = x;
+      this.y = y;
+      this.vy = vy;
+      this.r = 8;
+      this.alive = true;
+      this.bounce = bounce;       // 剩余反弹次数
+      this.squish = 0;            // 撞击形变 0~1
+    }
+    update(dt) {
+      this.vy += 1400 * dt;       // 重力
+      this.y += this.vy * dt;
+      if (this.squish > 0) this.squish = Math.max(0, this.squish - dt * 4);
+
+      if (this.y >= waterLine) {
+        this.onHit();
+      }
+    }
+    onHit() {
+      // 产生涟漪
+      spawnRipple(this.x, waterLine);
+
+      if (this.bounce > 0) {
+        // 弹起，反弹一次后变小
+        this.y = waterLine - 1;
+        this.vy = -Math.abs(this.vy) * 0.55;
+        this.bounce -= 1;
+        this.r *= 0.75;
+        this.squish = 1;
+        // 弹起时也可以产生小涟漪
+        if (this.bounce === 0) {
+          // 最后一次下落：完全融入水面
+          this.alive = false;
+          splash(this.x, waterLine);
+        }
+      } else {
+        this.alive = false;
+        splash(this.x, waterLine);
+      }
+    }
+    draw(ctx) {
+      const sy = 1 - this.squish * 0.5;
+      const sx = 1 + this.squish * 0.4;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.scale(sx, sy);
+      const g = ctx.createRadialGradient(-this.r * 0.3, -this.r * 0.3, this.r * 0.2, 0, 0, this.r);
+      g.addColorStop(0, 'rgba(230, 250, 255, 0.95)');
+      g.addColorStop(0.5, 'rgba(120, 200, 255, 0.85)');
+      g.addColorStop(1, 'rgba(30, 90, 160, 0.9)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+      ctx.fill();
+      // 高光
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.arc(-this.r * 0.35, -this.r * 0.4, this.r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ---------- 涟漪 ----------
+  class Ripple {
+    constructor(x, y, scale = 1) {
+      this.x = x;
+      this.y = y;
+      this.age = 0;
+      this.life = 1.8;
+      this.scale = scale;
+      this.maxR = 140 * scale;
+    }
+    update(dt) { this.age += dt; }
+    get dead() { return this.age >= this.life; }
+    draw(ctx) {
+      const t = this.age / this.life;
+      const r = this.maxR * t;
+      const alpha = (1 - t) * 0.75;
+      const lineW = 3 * (1 - t * 0.6);
+
+      ctx.save();
+      // 外圈淡水波
+      ctx.strokeStyle = `rgba(180, 220, 255, ${alpha * 0.8})`;
+      ctx.lineWidth = lineW;
+      ctx.beginPath();
+      ctx.ellipse(this.x, this.y, r, r * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 内圈高光
+      ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.9})`;
+      ctx.lineWidth = lineW * 0.45;
+      ctx.beginPath();
+      ctx.ellipse(this.x, this.y, r * 0.7, r * 0.7 * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---------- 水花溅射 ----------
+  class SplashParticle {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 1.2;
+      const speed = 120 + Math.random() * 220;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.r = 1 + Math.random() * 2.2;
+      this.life = 0.6 + Math.random() * 0.4;
+      this.age = 0;
+    }
+    update(dt) {
+      this.vy += 900 * dt;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.age += dt;
+    }
+    get dead() { return this.age >= this.life || this.y >= waterLine; }
+    draw(ctx) {
+      const alpha = 1 - this.age / this.life;
+      ctx.fillStyle = `rgba(220, 240, 255, ${alpha * 0.9})`;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  const droplets = [];
+  const ripples = [];
+  const particles = [];
+
+  function dropAt(x, y = -20, bounce = 1) {
+    droplets.push(new Droplet(x, y, 0, bounce));
+  }
+  function spawnRipple(x, y) {
+    ripples.push(new Ripple(x, y, 1));
+    // 延迟一个更小的涟漪，叠加更真实
+    setTimeout(() => {
+      ripples.push(new Ripple(x, y, 0.6));
+    }, 180);
+  }
+  function splash(x, y) {
+    const n = 16;
+    for (let i = 0; i < n; i++) particles.push(new SplashParticle(x, y));
+  }
+
+  // ---------- 主循环 ----------
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.04, (now - last) / 1000);
+    last = now;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // 水面分界线（柔和高光）
+    const waterGrad = ctx.createLinearGradient(0, waterLine, 0, H);
+    waterGrad.addColorStop(0, 'rgba(80, 160, 220, 0.35)');
+    waterGrad.addColorStop(1, 'rgba(10, 30, 60, 0.7)');
+    ctx.fillStyle = waterGrad;
+    ctx.fillRect(0, waterLine, W, H - waterLine);
+
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(200, 230, 255, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.moveTo(0, waterLine);
+    ctx.lineTo(W, waterLine);
+    ctx.stroke();
+
+    // 更新 & 绘制
+    for (const d of droplets) d.update(dt);
+    for (const r of ripples) r.update(dt);
+    for (const p of particles) p.update(dt);
+
+    for (const r of ripples) r.draw(ctx);
+    for (const p of particles) p.draw(ctx);
+    // 水滴画在最上层，落水前可见
+    for (const d of droplets) if (d.alive) d.draw(ctx);
+
+    // 清理死亡对象
+    for (let i = droplets.length - 1; i >= 0; i--)
+      if (!droplets[i].alive) droplets.splice(i, 1);
+    for (let i = ripples.length - 1; i >= 0; i--)
+      if (ripples[i].dead) ripples.splice(i, 1);
+    for (let i = particles.length - 1; i >= 0; i--)
+      if (particles[i].dead) particles.splice(i, 1);
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- 交互 ----------
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    // 从顶部掉落，落点为点击处
+    dropFromAbove(x);
+  });
+
+  function dropFromAbove(x) {
+    const d = new Droplet(x, -30, 0, 1);
+    droplets.push(d);
+  }
+
+  document.getElementById('btnDrop').addEventListener('click', () => {
+    dropFromAbove(W * (0.3 + Math.random() * 0.4));
+  });
+
+  let autoTimer = null;
+  document.getElementById('btnAuto').addEventListener('click', (e) => {
+    if (autoTimer) {
+      clearInterval(autoTimer);
+      autoTimer = null;
+      e.currentTarget.textContent = '自动落水滴';
+    } else {
+      e.currentTarget.textContent = '停止自动';
+      dropFromAbove(W * (0.3 + Math.random() * 0.4));
+      autoTimer = setInterval(() => {
+        dropFromAbove(W * (0.2 + Math.random() * 0.6));
+      }, 1100);
+    }
+  });
+})();
+</script>
+</body>
+</html>
